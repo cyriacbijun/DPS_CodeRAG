@@ -1,0 +1,948 @@
+"def _format_pipe(fd):  
+    # Check if the file descriptor is subprocess.PIPE  
+    if fd == subprocess.PIPE:  
+        # Return a string representing a pipe  
+        return '<pipe>'  
+    
+    # Check if the file descriptor is subprocess.STDOUT  
+    elif fd == subprocess.STDOUT:  
+        # Return a string indicating it points to stdout  
+        return '<stdout>'  
+    
+    else:  
+        # For all other cases, return the string representation of the descriptor
+        return repr(fd)  
+","The _format_pipe function is a utility method used to format file descriptors for display. It primarily works with special values from the subprocess module, such as subprocess.PIPE and subprocess.STDOUT, and returns human-readable string representations for these. If the file descriptor does not match these special cases, the function returns the string representation of the descriptor itself using repr(). This function is useful for debugging or logging purposes, making it easier to interpret the status or configuration of file descriptors in subprocess management."
+"def _set_reuseport(sock):  
+    # Check if the socket module has the SO_REUSEPORT attribute
+    if not hasattr(socket, 'SO_REUSEPORT'):  
+        # Raise an error if the system does not support reuse_port
+        raise ValueError('reuse_port not supported by socket module')  
+    
+    else:  
+        try:  
+            # Attempt to set the SO_REUSEPORT option on the socket
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)  
+        except OSError:  
+            # Raise an error if SO_REUSEPORT is defined but not implemented on the platform
+            raise ValueError('reuse_port not supported by socket module, '  
+                             'SO_REUSEPORT defined but not implemented.')  
+","The _set_reuseport function enables the SO_REUSEPORT socket option on a given socket object. This option allows multiple sockets on the same host to bind to the same port, which is useful in scenarios such as load balancing or high-performance server applications. The function first checks if the SO_REUSEPORT attribute is available in the socket module. If not, it raises an error. If the attribute exists but fails during the setsockopt call, the function raises an error indicating that the platform defines SO_REUSEPORT but doesn't support it in practice."
+"def _ipaddr_info(host, port, family, type, proto, flowinfo=0, scopeid=0):  
+    # Check if the system supports inet_pton, which parses IP addresses.
+    if not hasattr(socket, 'inet_pton'):  
+        return  # Exit if IP parsing is not supported.
+    
+    # Skip if the protocol is not TCP, UDP, or unspecified, or if the host is None.
+    if proto not in {0, socket.IPPROTO_TCP, socket.IPPROTO_UDP} or host is None:  
+        return None  
+
+    # Map socket type to protocol.
+    if type == socket.SOCK_STREAM:  
+        proto = socket.IPPROTO_TCP  
+    elif type == socket.SOCK_DGRAM:  
+        proto = socket.IPPROTO_UDP  
+    else:  
+        return None  # Exit for unsupported socket types.
+
+    # Normalize the port value.
+    if port is None:  
+        port = 0  # Default to port 0 if none is provided.
+    elif isinstance(port, bytes) and port == b'':  
+        port = 0  
+    elif isinstance(port, str) and port == '':  
+        port = 0  
+    else:  
+        try:  
+            # Convert port to an integer if possible.
+            port = int(port)  
+        except (TypeError, ValueError):  
+            return None  # Exit if the port is a service name.
+
+    # Determine address families to check based on input and system support.
+    if family == socket.AF_UNSPEC:  
+        afs = [socket.AF_INET]  # Default to IPv4.
+        if _HAS_IPv6:  # Include IPv6 if available.
+            afs.append(socket.AF_INET6)  
+    else:  
+        afs = [family]  
+
+    # Decode host if it's in bytes and check for zone index in IPv6.
+    if isinstance(host, bytes):  
+        host = host.decode('idna')  
+    if '%' in host:  
+        # Zone indices like '::1%lo0' are not supported in inet_pton.
+        return None  
+
+    # Attempt to validate the IP address for each address family.
+    for af in afs:  
+        try:  
+            socket.inet_pton(af, host)  # Check if the host is a valid IP.
+            if _HAS_IPv6 and af == socket.AF_INET6:  
+                # Return formatted IPv6 address info.
+                return af, type, proto, '', (host, port, flowinfo, scopeid)  
+            else:  
+                # Return formatted IPv4 address info.
+                return af, type, proto, '', (host, port)  
+        except OSError:  
+            pass  # Ignore errors and try the next family.
+
+    # Return None if the host is not a valid IP address.
+    return None  
+","The _ipaddr_info function attempts to optimize network operations by skipping DNS resolution if a given host is already an IP address. It checks the validity and type of the provided host and port and returns address information formatted for socket usage. This function is helpful in scenarios where applications handle name resolution independently, improving performance by avoiding redundant system calls like getaddrinfo.
+
+The function also ensures compatibility with both IPv4 and IPv6 based on the system's capabilities. If the host is not a valid IP address, it defaults to returning None, indicating that resolution via standard means might be required"
+"def _interleave_addrinfos(addrinfos, first_address_family_count=1):  
+    """"""Interleave list of addrinfo tuples by family.""""""  
+
+    # Group addresses by their family into an ordered dictionary.
+    addrinfos_by_family = collections.OrderedDict()  
+    for addr in addrinfos:  
+        family = addr[0]  # Extract the address family from the tuple.
+        if family not in addrinfos_by_family:  
+            # Initialize a list for this family if not already present.
+            addrinfos_by_family[family] = []  
+        # Append the current address info tuple to the corresponding family.
+        addrinfos_by_family[family].append(addr)  
+
+    # Convert grouped address info lists to a list of lists.
+    addrinfos_lists = list(addrinfos_by_family.values())  
+
+    # Initialize the reordered list for the result.
+    reordered = []  
+    
+    if first_address_family_count > 1:  
+        # Prioritize the specified number of addresses from the first family.
+        reordered.extend(addrinfos_lists[0][:first_address_family_count - 1])  
+        # Remove the prioritized addresses from the first family list.
+        del addrinfos_lists[0][:first_address_family_count - 1]  
+    
+    # Interleave the remaining address info tuples from all families.
+    reordered.extend(  
+        a for a in itertools.chain.from_iterable(  
+            itertools.zip_longest(*addrinfos_lists)  # Combine families alternately.
+        ) if a is not None  # Ignore placeholders for missing values.
+    )  
+
+    # Return the reordered list of address infos.
+    return reordered  
+","The _interleave_addrinfos function takes a list of addrinfo tuples (typically from socket.getaddrinfo) and rearranges them to interleave the address families (e.g., IPv4, IPv6) for better distribution. The function ensures that address records from different families are returned in an alternating order, which can help prioritize certain address families without starving others. The first_address_family_count parameter allows specifying how many initial addresses from the first family should be prioritized before interleaving starts"
+"def _run_until_complete_cb(fut):  
+    # Check if the Future has been cancelled.
+    if not fut.cancelled():  
+        # Retrieve any exception raised during the Future's execution.
+        exc = fut.exception()  
+        if isinstance(exc, (SystemExit, KeyboardInterrupt)):  
+            # If the exception is SystemExit or KeyboardInterrupt:
+            # These exceptions indicate normal termination, so do not stop the loop.
+            # Issue #22429: run_forever() has already finished.
+            return  
+    
+    # Stop the event loop associated with the Future, regardless of the outcome.
+    futures._get_loop(fut).stop()  
+","The _run_until_complete_cb function serves as a callback that is executed upon the completion of a Future object in an asynchronous event loop. If the Future is not cancelled, it checks for exceptions. If the exception is a SystemExit or KeyboardInterrupt, it returns early without stopping the event loop, as these exceptions typically indicate that the application is terminating naturally. For other cases, it stops the event loop associated with the Future. This function ensures graceful handling of event loop termination based on the Future's outcome."
+"def _check_ssl_socket(sock):  
+    # Check if the ssl module is available and the socket is an SSL socket.
+    if ssl is not None and isinstance(sock, ssl.SSLSocket):  
+        # Raise a TypeError if the provided socket is an SSL socket.
+        raise TypeError(""Socket cannot be of type SSLSocket"")  
+","The _check_ssl_socket function verifies whether a given socket is an instance of ssl.SSLSocket. If it is, the function raises a TypeError, indicating that SSL sockets are not supported for the specific operation. This function is useful for enforcing constraints in applications where SSL connections are either unnecessary or could cause unexpected behavior."
+"def __init__(self, transp):  
+    # Check if the provided transport implements the _FlowControlMixin interface.
+    if not isinstance(transp, transports._FlowControlMixin):  
+        # Raise a TypeError if the transport is not an instance of _FlowControlMixin.
+        raise TypeError(""transport should be _FlowControlMixin instance"")  
+    
+    # Store the provided transport for later use.
+    self._transport = transp  
+    
+    # Retrieve and store the protocol associated with the transport.
+    self._proto = transp.get_protocol()  
+    
+    # Check if the transport is currently reading and store the state.
+    self._should_resume_reading = transp.is_reading()  
+    
+    # Check if the transport's protocol is paused for writing and store the state.
+    self._should_resume_writing = transp._protocol_paused  
+    
+    # Pause reading on the transport to manage flow control.
+    transp.pause_reading()  
+    
+    # Replace the transport's protocol with the current object.
+    transp.set_protocol(self)  
+    
+    # If the transport's protocol is paused for writing, create a future for write readiness.
+    if self._should_resume_writing:  
+        self._write_ready_fut = self._transport._loop.create_future()  
+    else:  
+        # Otherwise, set the write-ready future to None.
+        self._write_ready_fut = None  
+","The __init__ method initializes an object that interacts with a transport implementing the _FlowControlMixin interface, which is part of Python's asynchronous I/O framework. It validates the transport type, stores references to its protocol and state, and configures the transport by pausing reading and replacing its protocol with the current object. The method also sets up a future for write readiness if the transport's protocol is paused. This setup helps manage flow control in asynchronous communication, ensuring proper handling of data reads and writes."
+"def connection_lost(self, exc):  
+    # Check if there is a pending write-ready future.
+    if self._write_ready_fut is not None:  
+        # Handle the case where the connection is closed without an error.
+        # This typically doesn't happen unless the peer closes the connection gracefully.
+        if exc is None:  
+            # Set a ConnectionError exception on the write-ready future to indicate closure.
+            self._write_ready_fut.set_exception(  
+                ConnectionError(""Connection is closed by peer"")  
+            )  
+        else:  
+            # If an exception caused the disconnection, propagate that exception.
+            self._write_ready_fut.set_exception(exc)  
+    
+    # Delegate the connection lost event to the protocol's `connection_lost` method.
+    self._proto.connection_lost(exc)  
+","The connection_lost method is a callback triggered when a transport's connection is lost. It handles the disconnection event by updating the write readiness future (_write_ready_fut) to reflect the connection status. If the disconnection is clean but unexpected (no exception), it raises a ConnectionError. If an exception caused the disconnection, that exception is propagated. The method then delegates further handling of the event to the underlying protocol's connection_lost method. This function ensures that the protocol and transport layers are properly notified and updated during connection termination."
+"def pause_writing(self):  
+    # If there is already a pending write-ready future, do nothing.
+    if self._write_ready_fut is not None:  
+        return  
+    
+    # If no pending future exists, create a new one to signal that writing is paused.
+    self._write_ready_fut = self._transport._loop.create_future()  
+","The pause_writing method pauses the writing operations on the transport layer. If there is already a Future object (_write_ready_fut) indicating that writing should be resumed once the transport is ready, the method does nothing. If there isn't a pending write readiness future, it creates one, signaling that writing is paused and will resume when the future is completed. This is part of managing flow control in asynchronous communication, ensuring that writes are paused when necessary and can be resumed later."
+"def resume_writing(self):  
+    # If there is no pending write-ready future, do nothing.
+    if self._write_ready_fut is None:  
+        return  
+    
+    # Set the result of the write-ready future to False, signaling that writing can resume.
+    self._write_ready_fut.set_result(False)  
+    
+    # Clear the write-ready future, indicating that writing is no longer paused.
+    self._write_ready_fut = None  
+","The resume_writing method resumes writing operations on the transport layer. If there is no pending write readiness future (_write_ready_fut), it simply returns without taking any action. If a future exists, it sets the result of the future to False, signaling that writing can resume. After that, the method clears the _write_ready_fut, indicating that the pause is lifted and writing is no longer blocked. This is part of the flow control mechanism, ensuring that writes are resumed once the necessary conditions are met."
+"async def restore(self):  
+    # Restore the transport's protocol to the original one stored in self._proto.
+    self._transport.set_protocol(self._proto)  
+    
+    # If reading was previously paused, resume reading on the transport.
+    if self._should_resume_reading:  
+        self._transport.resume_reading()  
+    
+    # If there is a pending write-ready future, cancel it as it is no longer needed.
+    # The cancellation has no effect because the protocol is switched back and no code
+    # should be waiting for the future anymore.
+    if self._write_ready_fut is not None:  
+        self._write_ready_fut.cancel()  
+    
+    # If writing was previously paused, resume writing on the protocol.
+    if self._should_resume_writing:  
+        self._proto.resume_writing()  
+","The restore method is an asynchronous function that restores the transport's protocol and flow control settings. It first sets the protocol back to its original state, then checks if reading or writing should be resumed based on the saved states. If reading should be resumed, it calls the resume_reading method on the transport. If there is a pending write readiness future (_write_ready_fut), it cancels the future, ensuring that no code is waiting for it anymore. Finally, if writing should be resumed, it invokes the resume_writing method on the protocol. This method is used to undo the temporary flow control changes and restore normal operations"
+"def _attach(self, transport):  
+    # Assert that the _sockets attribute is not None, ensuring that the object is initialized properly.
+    assert self._sockets is not None  
+    
+    # Add the provided transport to the _clients set, which tracks active client connections.
+    self._clients.add(transport)  
+","The _attach method is used to attach a transport to the current object, typically adding the transport to a set of client connections. The method asserts that the _sockets attribute is not None, which is likely a precondition to ensure that the object has been properly initialized before attaching a new transport. It then adds the provided transport to the _clients set, which presumably tracks active client connections. This function is useful for managing and keeping track of multiple transports in networking or server-side applications."
+"def _start_serving(self):  
+    # If the server is already serving, do nothing.
+    if self._serving:  
+        return  
+    
+    # Set the _serving flag to True, indicating that the server is now active.
+    self._serving = True  
+    
+    # Iterate over each socket in the _sockets collection and start listening for connections.
+    for sock in self._sockets:  
+        sock.listen(self._backlog)  # Begin accepting incoming connections on the socket.
+        
+        # Start serving by calling the _start_serving method on the event loop,
+        # passing the protocol factory, socket, SSL context, and other parameters.
+        self._loop._start_serving(  
+            self._protocol_factory,  # Protocol factory for creating protocol instances.
+            sock,                    # The socket that will accept incoming connections.
+            self._ssl_context,       # The SSL context for secure connections (if applicable).
+            self,                    # The current object, likely representing the server.
+            self._backlog,           # The backlog value, defining how many connections can be queued.
+            self._ssl_handshake_timeout,  # Timeout for the SSL handshake.
+            self._ssl_shutdown_timeout  # Timeout for the SSL shutdown.
+        )
+","The _start_serving method initiates the serving process for the server by setting the server state to ""serving"" and then configuring the sockets to start accepting connections. If the server is already in the ""serving"" state (self._serving is True), the method simply returns without performing any further action. Otherwise, it sets the _serving flag to True, indicating that the server is now actively serving. It then iterates over the _sockets collection, invoking the listen() method on each socket to begin accepting incoming connections. The method also calls _start_serving on the event loop (self._loop), passing necessary parameters like the protocol factory, SSL context, and various timeouts to manage SSL handshake and shutdown operations."
+"def create_task(self, coro, *, name=None, context=None):  
+    """"""Schedule a coroutine object.
+
+    Return a task object.
+    """"""
+    
+    # Check if the event loop is closed. If it is, prevent scheduling further tasks.
+    self._check_closed()  
+    
+    # If no custom task factory is defined, create a Task using the default constructor.
+    if self._task_factory is None:  
+        # Create a task for the given coroutine (coro), with the event loop (self), name, and context.
+        task = tasks.Task(coro, loop=self, name=name, context=context)  
+        
+        # If the task has a source traceback (it could have been copied from elsewhere), remove the last trace.
+        if task._source_traceback:  
+            del task._source_traceback[-1]  
+    
+    else:  
+        # If a custom task factory is set, use it to create the task.
+        if context is None:  
+            # Use the legacy API if context is not provided.
+            task = self._task_factory(self, coro)  
+        else:  
+            # Use the custom task factory and provide the context if specified.
+            task = self._task_factory(self, coro, context=context)  
+
+        # Set the task's name, ensuring it is set appropriately.
+        task.set_name(name)  
+    
+    # Return the created task object, which represents the scheduled coroutine.
+    return task  
+","The create_task method schedules a coroutine for execution in the event loop, returning a task object that tracks the coroutine's execution. It first checks if the event loop is closed by calling _check_closed(). If no custom task factory (_task_factory) is set, it creates a Task object using the default task constructor. If a custom task factory is defined, it uses it to create the task, optionally passing a context. The method also ensures that the task name is set, and if the task has a source traceback, it removes the last element to avoid unwanted tracebacks from propagating. This method is crucial for managing coroutines within an event loop, scheduling them to run asynchronously."
+"def _asyncgen_finalizer_hook(self, agen):  
+    # Remove the asynchronous generator (agen) from the set of active generators.
+    self._asyncgens.discard(agen)  
+    
+    # If the event loop is not closed, schedule the closing of the asynchronous generator.
+    if not self.is_closed():  
+        # Use call_soon_threadsafe to safely schedule the closing of the generator in the event loop.
+        self.call_soon_threadsafe(self.create_task, agen.aclose())  
+","The _asyncgen_finalizer_hook method is a finalizer for asynchronous generators, designed to clean up and close asynchronous generators when they are no longer in use. It removes the generator (agen) from the set of active asynchronous generators (self._asyncgens). If the event loop is still open (not closed), it schedules the asynchronous generator's aclose() method to be called, which ensures that any remaining asynchronous resources held by the generator are properly cleaned up. This method helps in managing the lifecycle of asynchronous generators, ensuring that resources are released when the generator is discarded."
+"def _asyncgen_firstiter_hook(self, agen):  
+    # If asynchronous generators have already been shut down, issue a warning.
+    if self._asyncgens_shutdown_called:  
+        warnings.warn(  
+            f""asynchronous generator {agen!r} was scheduled after ""  
+            f""loop.shutdown_asyncgens() call"",  # Warning message, indicating that the generator was scheduled too late.
+            ResourceWarning,  # The type of warning issued (ResourceWarning).
+            source=self)  # The source of the warning (self, indicating it's the current loop instance).
+
+    # Add the asynchronous generator (agen) to the set of active async generators.
+    self._asyncgens.add(agen)  
+","The _asyncgen_firstiter_hook method is invoked when an asynchronous generator (agen) is first iterated. This hook is responsible for tracking the generator and ensuring proper warning handling if the generator is scheduled after the event loop has initiated its shutdown sequence for asynchronous generators. If the loop's shutdown process (loop.shutdown_asyncgens()) has already been called, it raises a warning indicating that an asynchronous generator was scheduled too late in the process. Regardless of the shutdown state, the generator is added to the set of active asynchronous generators (self._asyncgens), signaling that the event loop should manage it until it is completed or closed."
+"async def shutdown_asyncgens(self):  
+    """"""Shutdown all active asynchronous generators.""""""  
+    # Mark that the asynchronous generator shutdown process has started.
+    self._asyncgens_shutdown_called = True  
+
+    # If there are no active generators or the Python version is less than 3.6,
+    # return early as there is nothing to shut down.
+    if not len(self._asyncgens):  
+        # This covers both cases where no async generators are active or the
+        # system doesn't support async generators (e.g., Python version < 3.6).
+        return  
+
+    # Convert the set of active async generators into a list for closing.
+    closing_agens = list(self._asyncgens)  
+    self._asyncgens.clear()  # Clear the list of active asynchronous generators.
+
+    # Gather results from calling 'aclose()' on each generator asynchronously.
+    results = await tasks.gather(  
+        *[ag.aclose() for ag in closing_agens],  # Schedule the closing of each async generator.
+        return_exceptions=True  # Return exceptions as results instead of raising them.
+    )  
+
+    # Iterate over the results and their corresponding generators.
+    for result, agen in zip(results, closing_agens):  
+        # If an exception was raised during the closing of the generator, handle it.
+        if isinstance(result, Exception):  
+            # Call the exception handler to manage and log the error.
+            self.call_exception_handler({  
+                'message': f'an error occurred during closing of '  
+                           f'asynchronous generator {agen!r}',  # Error message including the generator.
+                'exception': result,  # The exception that was raised.
+                'asyncgen': agen  # The generator that caused the error.
+            })
+","The shutdown_asyncgens method is responsible for shutting down all active asynchronous generators within the event loop. It first sets a flag (_asyncgens_shutdown_called) to True to mark that the shutdown process has started. If there are no active asynchronous generators, or if the Python version is lower than 3.6 (which doesn't support the necessary asynchronous generator features), the method returns early without performing any action. If there are active generators, it collects them, clears the list of active generators, and then proceeds to close each asynchronous generator using its aclose() method. The method gathers the results of the aclose() calls, handling any exceptions that occur during the closure. If an exception occurs for any generator, the exception handler is called to log or manage the error appropriately."
+"async def shutdown_default_executor(self, timeout=None):  
+    """"""Schedule the shutdown of the default executor.
+
+    The timeout parameter specifies the amount of time the executor will
+    be given to finish joining. The default value is None, which means
+    that the executor will be given an unlimited amount of time.
+    """"""  
+    # Mark that the shutdown of the executor has been requested.
+    self._executor_shutdown_called = True  
+
+    # If there is no default executor, nothing to shut down.
+    if self._default_executor is None:  
+        return  
+
+    # Create a future that will represent the shutdown operation.
+    future = self.create_future()  
+
+    # Start a new thread to perform the shutdown operation asynchronously.
+    thread = threading.Thread(target=self._do_shutdown, args=(future,))  
+    thread.start()  # Start the shutdown thread.
+
+    try:  
+        # Wait for the future to complete within the specified timeout.
+        async with timeouts.timeout(timeout):  
+            await future  # Await the completion of the executor shutdown.
+    except TimeoutError:  
+        # If the shutdown takes longer than the timeout, issue a warning.
+        warnings.warn(  
+            ""The executor did not finishing joining ""  
+            f""its threads within {timeout} seconds."",  # Warning message.
+            RuntimeWarning,  # The warning type.
+            stacklevel=2)  # Set the stack level to highlight where the warning is generated.
+        
+        # Force the executor to shut down without waiting for threads.
+        self._default_executor.shutdown(wait=False)  
+    else:  
+        # If shutdown completed successfully within the timeout, join the shutdown thread.
+        thread.join()  
+","The shutdown_default_executor method is used to shut down the default executor associated with the event loop. The method schedules the shutdown of the executor by starting a separate thread that handles the shutdown process. The timeout parameter specifies the maximum time allowed for the executor to finish its operations. If the timeout expires before the executor finishes, a TimeoutError is raised, and a warning is issued. If the shutdown completes within the given timeout, the method waits for the thread to join and clean up. This method ensures that the executor is cleanly shut down, and handles cases where the shutdown takes longer than expected by issuing appropriate warnings."
+"def _do_shutdown(self, future):  
+    try:  
+        # Attempt to shut down the default executor and wait for threads to finish.
+        self._default_executor.shutdown(wait=True)  
+
+        # If the event loop is not closed, set the result of the future as 'None',
+        # indicating the shutdown was successful and completed.
+        if not self.is_closed():  
+            self.call_soon_threadsafe(  # Schedule the result setting on the event loop.
+                futures._set_result_unless_cancelled,  # Helper function to set result if not cancelled.
+                future,  # The future that will be set.
+                None  # No exception, indicating successful completion.
+            )  
+    except Exception as ex:  
+        # If an error occurs during the shutdown, handle it.
+        if not self.is_closed() and not future.cancelled():  
+            # If the future is not cancelled and the loop is not closed, set the exception on the future.
+            self.call_soon_threadsafe(future.set_exception, ex)  # Set the exception on the future.
+","The _do_shutdown method is responsible for shutting down the default executor by calling its shutdown() method and waiting for all threads to finish. If the shutdown process completes successfully and the event loop is still open, the method sets the result of the provided future to None, indicating that the shutdown has completed without issues. If any exceptions occur during the shutdown process, they are captured and the exception is set on the future (if it hasn't been cancelled), allowing the event loop to handle or log the error accordingly."
+"def _run_forever_setup(self):  
+    """"""Prepare the run loop to process events.
+
+    This method exists so that custom custom event loop subclasses (e.g., event loops
+    that integrate a GUI event loop with Python's event loop) have access to all the
+    loop setup logic.
+    """"""  
+    # Ensure the event loop is not closed before starting the run forever process.
+    self._check_closed()  
+
+    # Ensure the event loop is not already running (cannot run again if already running).
+    self._check_running()  
+
+    # Set up coroutine origin tracking if debugging is enabled.
+    self._set_coroutine_origin_tracking(self._debug)  
+
+    # Save the current asynchronous generator hooks for later restoration.
+    self._old_agen_hooks = sys.get_asyncgen_hooks()  
+
+    # Record the thread identifier of the current thread.
+    self._thread_id = threading.get_ident()  
+
+    # Set custom async generator hooks for first iteration and finalization.
+    sys.set_asyncgen_hooks(  
+        firstiter=self._asyncgen_firstiter_hook,  # Hook for the first iteration of async generators.
+        finalizer=self._asyncgen_finalizer_hook  # Hook for finalization of async generators.
+    )  
+
+    # Mark the current event loop as the running loop in the events module.
+    events._set_running_loop(self)  
+","The _run_forever_setup method is responsible for preparing the event loop to process events. It performs essential setup tasks such as verifying that the loop is not closed and that it is not already running, enabling coroutine origin tracking for debugging, and setting asynchronous generator hooks. The method also records the thread identifier and sets custom asynchronous generator hooks that handle the first iteration and finalization of asynchronous generators. Additionally, it marks the event loop as the current running loop, ensuring that the system is aware of the loop that is active. This setup is crucial for the proper functioning of the event loop, especially when integrating with custom or GUI event loops."
+"def run_until_complete(self, future):  
+    """"""Run until the Future is done.
+
+    If the argument is a coroutine, it is wrapped in a Task.
+
+    WARNING: It would be disastrous to call run_until_complete()
+    with the same coroutine twice -- it would wrap it in two
+    different Tasks and that can't be good.
+
+    Return the Future's result, or raise its exception.
+    """"""  
+    # Ensure the event loop is not closed before running.
+    self._check_closed()  
+
+    # Ensure the event loop is not already running (cannot run again if already running).
+    self._check_running()  
+
+    # Check if the provided argument is a Future, if not, wrap it in a Task.
+    new_task = not futures.isfuture(future)  
+    future = tasks.ensure_future(future, loop=self)  # Ensure it's a future (wrap if it's a coroutine).
+    
+    if new_task:  
+        # If the future is newly created (not passed as a Future), prevent logging pending task destruction.
+        future._log_destroy_pending = False  
+
+    # Add a callback that will run when the Future is done.
+    future.add_done_callback(_run_until_complete_cb)  
+
+    try:  
+        # Run the event loop until the Future completes.
+        self.run_forever()  
+    except:  
+        # Handle the case where the Future raised an exception.
+        if new_task and future.done() and not future.cancelled():
+            # If the coroutine raised a BaseException, consume the exception.
+            # This avoids logging a warning since the caller doesn't have access to the task.
+            future.exception()  
+        raise  # Re-raise the exception if there was one.
+    finally:  
+        # Remove the done callback to avoid it being called again.
+        future.remove_done_callback(_run_until_complete_cb)  
+
+    # If the future is not done after the event loop stops, raise an error.
+    if not future.done():  
+        raise RuntimeError('Event loop stopped before Future completed.')  
+
+    # Return the result of the future (or raise its exception).
+    return future.result()  
+","The run_until_complete method runs the event loop until the given Future is completed. If the argument is a coroutine, it wraps the coroutine in a Task. This method ensures that the event loop processes events until the specified Future is done, handling the completion or failure of the Future. It also ensures that the provided Future is properly handled and cleaned up, including managing any exceptions that may arise during the event loop's execution. The method returns the result of the Future or raises its exception. If the event loop stops before the Future is completed, a RuntimeError is raised."
+"async def _sendfile_fallback(self, transp, file, offset, count):  
+    # If an offset is specified, seek to that position in the file.
+    if offset:  
+        file.seek(offset)  
+    
+    # Set blocksize to the minimum of the requested count or 16KB (16384 bytes).
+    blocksize = min(count, 16384) if count else 16384  
+    
+    # Initialize a buffer to store the read data.
+    buf = bytearray(blocksize)  
+    
+    # Variable to track the total amount of data sent.
+    total_sent = 0  
+    
+    # Create a custom protocol for managing the flow of data.
+    proto = _SendfileFallbackProtocol(transp)  
+    
+    try:  
+        while True:  
+            # If a count is provided, adjust the blocksize to the remaining count.
+            if count:  
+                blocksize = min(count - total_sent, blocksize)  
+                if blocksize <= 0:  
+                    return total_sent  # If all data is sent, return the total sent.
+
+            # Create a memory view of the buffer up to the current blocksize.
+            view = memoryview(buf)[:blocksize]  
+
+            # Read data from the file into the buffer asynchronously.
+            read = await self.run_in_executor(None, file.readinto, view)  
+            if not read:  
+                return total_sent  # If no more data is read (EOF), return the total sent.
+
+            # Ensure the transport is ready to send more data (drain).
+            await proto.drain()  
+
+            # Write the read data to the transport connection.
+            transp.write(view[:read])  
+
+            # Update the total number of bytes sent.
+            total_sent += read  
+
+    finally:  
+        # After sending data, update the file's position if data was sent.
+        if total_sent > 0 and hasattr(file, 'seek'):  
+            file.seek(offset + total_sent)  
+
+        # Restore the protocol after the send operation.
+        await proto.restore()  
+","The _sendfile_fallback method is an asynchronous function designed to send a file in chunks over a transport connection, with a fallback mechanism when the sendfile system call is not available or supported. It reads from the provided file starting from the specified offset, sending data in blocks to the transport connection. The function handles the reading of the file, writing data over the transport, and ensuring that the file pointer is correctly updated after data is sent. The method also uses a custom protocol (_SendfileFallbackProtocol) to manage the flow of data and ensure that the transport is ready for the next chunk of data."
+"async def _ensure_resolved(self, address, *,  # The function takes an address (host, port) and additional parameters for resolving.
+                               family=0,  # The address family (AF_INET for IPv4, AF_INET6 for IPv6, etc.), default is 0 (AF_UNSPEC).
+                               type=socket.SOCK_STREAM,  # The socket type, default is SOCK_STREAM (TCP).
+                               proto=0,  # The protocol type, default is 0 (any protocol).
+                               flags=0,  # Additional flags for getaddrinfo, default is 0.
+                               loop):  # The event loop used for asynchronous operations.
+    
+    host, port = address[:2]  # Extract host and port from the address tuple.
+    
+    # Attempt to resolve the address using the _ipaddr_info function (local resolution).
+    info = _ipaddr_info(host, port, family, type, proto, *address[2:])
+    
+    if info is not None:  # If the address is already resolved to an IP address.
+        return [info]  # Return the resolved information as a list.
+    else:
+        # If the address is not resolved (i.e., it’s a domain name), use getaddrinfo asynchronously.
+        return await loop.getaddrinfo(host, port, family=family, type=type, 
+                                      proto=proto, flags=flags)
+","The _ensure_resolved method is an asynchronous utility function designed to ensure that a given address (host and port) is resolved to an IP address. The function first attempts to resolve the address using a local method (_ipaddr_info) to check if the provided host is already an IP address. If it is, the method returns the resolved address. If not, it asynchronously resolves the host and port using the event loop's getaddrinfo method. This function is useful for handling both pre-resolved IP addresses and domain names that need resolution."
+"async def connect_accepted_socket(  # Define the asynchronous function to handle accepted socket connections.
+            self, protocol_factory, sock,  # Self refers to the instance, protocol_factory is used to create a new protocol, sock is the accepted socket.
+            *, ssl=None,  # Optional SSL configuration for the connection.
+            ssl_handshake_timeout=None,  # Optional timeout for the SSL handshake.
+            ssl_shutdown_timeout=None):  # Optional timeout for the SSL shutdown.
+
+    # Check if the socket is of the expected SOCK_STREAM type (TCP socket).
+    if sock.type != socket.SOCK_STREAM:
+        raise ValueError(f'A Stream Socket was expected, got {sock!r}')
+
+    # If ssl_handshake_timeout is provided, ensure that ssl is also provided.
+    if ssl_handshake_timeout is not None and not ssl:
+        raise ValueError(
+            'ssl_handshake_timeout is only meaningful with ssl')
+
+    # Similarly, ensure ssl_shutdown_timeout is only set if ssl is provided.
+    if ssl_shutdown_timeout is not None and not ssl:
+        raise ValueError(
+            'ssl_shutdown_timeout is only meaningful with ssl')
+
+    # If a socket is provided, check if it's an SSL socket and raise an error if it is.
+    if sock is not None:
+        _check_ssl_socket(sock)
+
+    # Asynchronously create the connection transport and protocol.
+    transport, protocol = await self._create_connection_transport(
+        sock, protocol_factory, ssl, '', server_side=True,  # Establish the transport and protocol, indicating that this is a server-side connection.
+        ssl_handshake_timeout=ssl_handshake_timeout,  # Pass the SSL handshake timeout if provided.
+        ssl_shutdown_timeout=ssl_shutdown_timeout)  # Pass the SSL shutdown timeout if provided.
+
+    # Debugging: If debugging is enabled, log the details of the transport and protocol.
+    if self._debug:
+        # The transport may have created a new socket for SSL, so get the original socket from the transport.
+        sock = transport.get_extra_info('socket')
+        logger.debug(""%r handled: (%r, %r)"", sock, transport, protocol)  # Log the socket, transport, and protocol for debugging.
+
+    # Return the established transport and protocol for further use.
+    return transport, protocol
+","The connect_accepted_socket method is an asynchronous function that handles the connection setup for an accepted socket, typically in the context of a server accepting incoming client connections. It validates the socket type, handles optional SSL configurations, and establishes a transport and protocol using the provided socket. If SSL is involved, the method manages SSL handshake and shutdown timeouts. After successfully establishing the transport and protocol, the function returns them, providing the caller with the necessary components to communicate over the accepted connection."
+"def _log_subprocess(self, msg, stdin, stdout, stderr):  # Define the function to log subprocess details.
+    info = [msg]  # Start by adding the initial message (e.g., command being executed).
+    
+    # If stdin is provided, add its formatted representation to the log.
+    if stdin is not None:
+        info.append(f'stdin={_format_pipe(stdin)}')
+
+    # If stdout and stderr are both directed to the same stream (STDOUT), log them together.
+    if stdout is not None and stderr == subprocess.STDOUT:
+        info.append(f'stdout=stderr={_format_pipe(stdout)}')
+    else:
+        # Otherwise, log stdout and stderr separately.
+        if stdout is not None:
+            info.append(f'stdout={_format_pipe(stdout)}')
+        if stderr is not None:
+            info.append(f'stderr={_format_pipe(stderr)}')
+
+    # Join the message parts into a single string and log it as a debug message.
+    logger.debug(' '.join(info))
+","The _log_subprocess method is used to log information about a subprocess invocation, including details about the stdin, stdout, and stderr streams. It formats these streams appropriately (using the _format_pipe function) and constructs a log message. The method then logs this message using the logger.debug() function, ensuring that relevant details about the subprocess communication are captured for debugging purposes. This function helps monitor the input/output streams of subprocesses, especially in complex systems where multiple subprocesses are managed."
+"def _set_coroutine_origin_tracking(self, enabled):  # Method to toggle coroutine origin tracking.
+    # Check if the desired state (enabled/disabled) is different from the current state.
+    if bool(enabled) == bool(self._coroutine_origin_tracking_enabled):
+        return  # No change needed if the state is already as requested.
+
+    if enabled:  # If enabling origin tracking:
+        # Save the current depth of coroutine origin tracking before modifying it.
+        self._coroutine_origin_tracking_saved_depth = (
+            sys.get_coroutine_origin_tracking_depth())
+        # Set the coroutine origin tracking depth to a predefined constant (DEBUG_STACK_DEPTH).
+        sys.set_coroutine_origin_tracking_depth(
+            constants.DEBUG_STACK_DEPTH)
+    else:  # If disabling origin tracking:
+        # Restore the original tracking depth that was saved earlier.
+        sys.set_coroutine_origin_tracking_depth(
+            self._coroutine_origin_tracking_saved_depth)
+
+    # Update the internal state to reflect whether coroutine origin tracking is enabled or not.
+    self._coroutine_origin_tracking_enabled = enabled
+","The _set_coroutine_origin_tracking method is used to manage the tracking of coroutine origins in Python, which helps identify the stack trace when a coroutine is created. The method enables or disables this tracking based on the enabled parameter. If tracking is enabled, it saves the current depth of coroutine origin tracking, and then sets it to a predefined constant value (constants.DEBUG_STACK_DEPTH). If tracking is disabled, it restores the saved depth of the tracking. This method ensures that the coroutine origin tracking is only modified when necessary, providing more granular control over how coroutine origins are traced."
+"def _format_callbacks(cb):  # Function to format the list of callbacks.
+    """"""helper function for Future.__repr__""""""
+    size = len(cb)  # Get the number of callbacks in the list.
+    if not size:  # If there are no callbacks.
+        cb = ''  # Set cb to an empty string.
+
+    # Function to format a single callback.
+    def format_cb(callback):
+        return format_helpers._format_callback_source(callback, ())
+
+    # Handle different callback list sizes.
+    if size == 1:
+        cb = format_cb(cb[0][0])  # Format the single callback.
+    elif size == 2:
+        cb = '{}, {}'.format(format_cb(cb[0][0]), format_cb(cb[1][0]))  # Format two callbacks.
+    elif size > 2:
+        # For more than two callbacks, display the first and last callback and the count of the omitted ones.
+        cb = '{}, <{} more>, {}'.format(format_cb(cb[0][0]), size - 2, format_cb(cb[-1][0]))
+
+    # Return the formatted string with all the callbacks.
+    return f'cb=[{cb}]'
+","The _format_callbacks function is a helper used to format the representation of callbacks associated with a Future object (as seen in Future.__repr__). It takes a list of callback functions, processes it, and returns a string that formats the callbacks in a concise and readable way. If there are too many callbacks, it reduces the list to a more compact form while still indicating how many callbacks are omitted."
+"def _future_repr_info(future):
+    # (Future) -> str
+    """"""helper function for Future.__repr__""""""
+    info = [future._state.lower()]  # Start with the state of the Future (e.g., 'pending', 'done', etc.)
+
+    # If the future is finished, we add more detailed information about the result or exception.
+    if future._state == _FINISHED:
+        if future._exception is not None:
+            # If there's an exception, add it to the info.
+            info.append(f'exception={future._exception!r}')
+        else:
+            # If there is no exception, add the result. Use reprlib to limit string length.
+            result = reprlib.repr(future._result)
+            info.append(f'result={result}')
+
+    # If there are any callbacks, format them and add them to the info.
+    if future._callbacks:
+        info.append(_format_callbacks(future._callbacks))
+
+    # If the future has a source traceback, include the location where it was created.
+    if future._source_traceback:
+        frame = future._source_traceback[-1]  # Get the last frame from the traceback.
+        info.append(f'created at {frame[0]}:{frame[1]}')  # Append the file and line number.
+
+    return info  # Return the list of formatted strings.
+","The _future_repr_info function is a helper used for generating a string representation of a Future object in the __repr__ method. It collects various pieces of information about the Future's state, result, exception, callbacks, and creation source, and returns them as a list of formatted strings. This representation can be helpful for debugging and logging purposes."
+"def _task_repr_info(task):
+    # Generate the basic future representation info using _future_repr_info.
+    info = base_futures._future_repr_info(task)
+
+    # If the task is cancelling and not yet done, change the state representation.
+    if task.cancelling() and not task.done():
+        info[0] = 'cancelling'
+
+    # Insert the task name after the state.
+    info.insert(1, 'name=%r' % task.get_name())
+
+    # If the task is waiting for another future, insert that information.
+    if task._fut_waiter is not None:
+        info.insert(2, f'wait_for={task._fut_waiter!r}')
+
+    # If the task has an associated coroutine, insert it as well.
+    if task._coro:
+        coro = coroutines._format_coroutine(task._coro)  # Format the coroutine for display.
+        info.insert(2, f'coro=<{coro}>')
+
+    return info  # Return the list of formatted strings representing the task.
+","The _task_repr_info function is a helper designed to generate a string representation of a Task object, which is a subclass of Future in Python's asynchronous programming model. It builds upon the _future_repr_info function, adding additional details specific to a task, such as its cancellation status, associated coroutine, and future waiter."
+"def _task_print_stack(task, limit, file):
+    # Initialize a list to hold the stack trace details
+    extracted_list = []
+    checked = set()
+
+    # Iterate over the frames in the task's stack trace, limited by 'limit'
+    for f in task.get_stack(limit=limit):
+        lineno = f.f_lineno  # Line number where the frame is located
+        co = f.f_code  # Code object of the frame
+        filename = co.co_filename  # Filename of the code
+        name = co.co_name  # Name of the function or method
+
+        # Ensure that we only check the cache for a given file once
+        if filename not in checked:
+            checked.add(filename)
+            linecache.checkcache(filename)  # Refresh the linecache for this file
+
+        # Get the source code line at the given line number
+        line = linecache.getline(filename, lineno, f.f_globals)
+
+        # Append the stack trace information for this frame
+        extracted_list.append((filename, lineno, name, line))
+
+    # Check if the task has an exception associated with it
+    exc = task._exception
+
+    # If no stack trace information was collected
+    if not extracted_list:
+        print(f'No stack for {task!r}', file=file)
+    elif exc is not None:
+        # If the task has an exception, print a traceback
+        print(f'Traceback for {task!r} (most recent call last):', file=file)
+    else:
+        # Otherwise, just print the stack trace
+        print(f'Stack for {task!r} (most recent call last):', file=file)
+
+    # Print the extracted stack trace to the provided file
+    traceback.print_list(extracted_list, file=file)
+
+    # If an exception was caught in the task, print the exception details
+    if exc is not None:
+        for line in traceback.format_exception_only(exc.__class__, exc):
+            print(line, file=file, end='')
+","The _task_print_stack function is designed to print the stack trace for a Task object, including the source code locations and any associated exception details. It retrieves the stack information from the task, processes it, and formats the output to display the trace in a human-readable manner. This function is useful for debugging and tracing the execution path of tasks in asynchronous code, particularly when dealing with failed or incomplete tasks."
+"def _is_debug_mode():
+    # See: https://docs.python.org/3/library/asyncio-dev.html#asyncio-debug-mode.
+    
+    # Check if the 'dev_mode' flag is set in the sys.flags
+    return sys.flags.dev_mode or (not sys.flags.ignore_environment and
+                                  bool(os.environ.get('PYTHONASYNCIODEBUG')))
+","The _is_debug_mode() function checks whether Python's asyncio debug mode is enabled. This function is useful for determining if the program should run in debug mode, which enables additional debugging information and logging for asyncio-related activities."
+"def _get_function_source(func):
+    # Unwrap the function to handle cases where it's a wrapped function (e.g., through decorators)
+    func = inspect.unwrap(func)
+
+    # If the function is a standard function
+    if inspect.isfunction(func):
+        # Get the code object of the function and extract the filename and first line number
+        code = func.__code__
+        return (code.co_filename, code.co_firstlineno)
+
+    # If the function is a functools.partial (a partially-applied function)
+    if isinstance(func, functools.partial):
+        return _get_function_source(func.func)
+
+    # If the function is a functools.partialmethod (a partially-applied method)
+    if isinstance(func, functools.partialmethod):
+        return _get_function_source(func.func)
+
+    # If the function type is not recognized, return None
+    return None
+","The function _get_function_source extracts the source file and line number where a function was defined. It supports regular functions, functools.partial objects, and functools.partialmethod objects."
+"def _format_callback_source(func, args, *, debug=False):
+    # Get the formatted string representation of the function and its arguments
+    func_repr = _format_callback(func, args, None, debug=debug)
+    
+    # Retrieve the source information (file and line number) of the function
+    source = _get_function_source(func)
+    
+    # If the source information is available, append it to the function's representation
+    if source:
+        func_repr += f' at {source[0]}:{source[1]}'
+    
+    # Return the formatted function representation with source info if available
+    return func_repr
+","This function is used to generate a string representation of the function and its arguments. It formats the function in a way that's suitable for logging or debugging, including handling the function name and the arguments passed to it.
+The debug flag might control additional details, such as whether to include extra debugging information."
+"def _format_args_and_kwargs(args, kwargs, *, debug=False):
+    """"""Format function arguments and keyword arguments.
+
+    Special case for a single parameter: ('hello',) is formatted as ('hello').
+
+    Note that this function only returns argument details when
+    debug=True is specified, as arguments may contain sensitive
+    information.
+    """"""
+    if not debug:
+        return '()'
+
+    # use reprlib to limit the length of the output
+    items = []
+    if args:
+        items.extend(reprlib.repr(arg) for arg in args)
+    if kwargs:
+        items.extend(f'{k}={reprlib.repr(v)}' for k, v in kwargs.items())
+    return '({})'.format(', '.join(items))
+","The function _format_args_and_kwargs formats a function's positional (args) and keyword (kwargs) arguments for display or logging. This function is designed with a special focus on controlling the verbosity of the argument details based on the debug flag, and it uses reprlib to limit the output length for potentially large objects."
+"def _format_callback(func, args, kwargs, *, debug=False, suffix=''):
+    if isinstance(func, functools.partial):
+        suffix = _format_args_and_kwargs(args, kwargs, debug=debug) + suffix
+        return _format_callback(func.func, func.args, func.keywords,
+                                debug=debug, suffix=suffix)
+
+    if hasattr(func, '__qualname__') and func.__qualname__:
+        func_repr = func.__qualname__
+    elif hasattr(func, '__name__') and func.__name__:
+        func_repr = func.__name__
+    else:
+        func_repr = repr(func)
+
+    func_repr += _format_args_and_kwargs(args, kwargs, debug=debug)
+    if suffix:
+        func_repr += suffix
+    return func_repr
+","The function _format_callback is designed to generate a formatted string representation of a callback function, including its arguments, keyword arguments, and other relevant details. It's particularly useful when debugging or logging asynchronous callbacks."
+"def extract_stack(f=None, limit=None):
+    """"""Replacement for traceback.extract_stack() that only does the
+    necessary work for asyncio debug mode.
+    """"""
+    if f is None:
+        f = sys._getframe().f_back
+    if limit is None:
+        # Limit the amount of work to a reasonable amount, as extract_stack()
+        # can be called for each coroutine and future in debug mode.
+        limit = constants.DEBUG_STACK_DEPTH
+    stack = traceback.StackSummary.extract(traceback.walk_stack(f),
+                                           limit=limit,
+                                           lookup_lines=False)
+    stack.reverse()
+    return stack
+","The function extract_stack is a custom replacement for traceback.extract_stack() that is tailored for use in asyncio debug mode. It helps to efficiently extract stack traces with a focus on reducing overhead, particularly when debugging asynchronous operations."
+"def wrap_future(future, *, loop=None):
+    """"""Wrap concurrent.futures.Future object.""""""
+    if isfuture(future):
+        return future
+    assert isinstance(future, concurrent.futures.Future), \
+        f'concurrent.futures.Future is expected, got {future!r}'
+    if loop is None:
+        loop = events.get_event_loop()
+    new_future = loop.create_future()
+    _chain_future(future, new_future)
+    return new_future
+","The function wrap_future is designed to wrap a concurrent.futures.Future object into an asyncio Future object. This is useful when integrating concurrent.futures.Future with an asyncio event loop, as asyncio has its own Future implementation."
+"def _call_set_state(source):
+    if (destination.cancelled() and
+            dest_loop is not None and dest_loop.is_closed()):
+        return
+    if dest_loop is None or dest_loop is source_loop:
+        _set_state(destination, source)
+    else:
+        if dest_loop.is_closed():
+            return
+        dest_loop.call_soon_threadsafe(_set_state, destination, source)
+","The function _call_set_state appears to be a helper function for managing the state of a Future object, potentially in a multi-loop asyncio context. It looks like it's designed to ensure that the state of the destination Future is updated based on the state of the source Future, possibly across different event loops."
+"def _call_check_cancel(destination):
+    """"""
+    Checks if the destination Future is cancelled, and if so, propagates the cancellation
+    to the source Future, depending on whether both futures belong to the same event loop.
+    
+    Args:
+        destination (Future): The destination Future to check for cancellation.
+    
+    This function ensures that if the destination Future is cancelled, the source Future 
+    is also cancelled, either immediately (if both are in the same event loop) or safely 
+    in the event loop where the source Future resides (if they are in different loops).
+    """"""
+    if destination.cancelled():
+        # Check if the destination Future is cancelled.
+        
+        if source_loop is None or source_loop is dest_loop:
+            # If the source Future is not associated with an event loop or is
+            # in the same event loop as the destination, directly cancel it.
+            source.cancel()
+        else:
+            # If the source Future is in a different event loop, schedule the
+            # cancellation in the source loop using call_soon_threadsafe to ensure 
+            # cancellation is propagated asynchronously in the correct loop.
+            source_loop.call_soon_threadsafe(source.cancel)
+","The _call_check_cancel function propagates the cancellation of a destination Future to a source Future, ensuring that the cancellation occurs appropriately based on whether the futures are in the same or different event loops. If both futures are in the same loop, the source is cancelled immediately. If they are in different event loops, the function schedules the cancellation in the source's loop using call_soon_threadsafe. This is crucial for managing asynchronous tasks across multiple event loops, particularly in multi-threaded applications, where it ensures the proper cancellation of dependent tasks."
+"def _set_state(future, other):
+    """"""
+    Sets the state of a future (or concurrent future) by copying the state from another future.
+    
+    Args:
+        future (Future): The future whose state needs to be set.
+        other (Future): The source future from which the state will be copied.
+    
+    This function determines the type of the `future` (whether it is a regular `Future` or a
+    `concurrent.Future`), and depending on the type, it either copies the state from `other`
+    to `future` using `_copy_future_state()` or uses `_set_concurrent_future_state()` to set
+    the state for `concurrent.Future`.
+    """"""
+    if isfuture(future):
+        # If 'future' is a regular Future, copy its state from 'other'.
+        _copy_future_state(other, future)
+    else:
+        # If 'future' is a concurrent Future, set its state using a different method.
+        _set_concurrent_future_state(future, other)
+","The _set_state function is responsible for setting the state of one future (future) by copying the state from another (other). It checks whether the future is a regular Future or a concurrent.Future, and based on that, calls either _copy_future_state() for regular futures or _set_concurrent_future_state() for concurrent futures. This ensures that the appropriate method is used for setting the state, whether the future is part of the asyncio event loop or a concurrent task in a multi-threaded environment."
+"def _chain_future(source, destination):
+    """"""
+    Chain two futures so that when one completes, the other does as well.
+
+    This function ensures that the result (or exception) of the source future 
+    is transferred to the destination future when the source completes. If the 
+    destination is cancelled, the source future will also be cancelled.
+    
+    Args:
+        source (Future or concurrent.futures.Future): The source future.
+        destination (Future or concurrent.futures.Future): The destination future to be chained.
+
+    Raises:
+        TypeError: If either 'source' or 'destination' is not a valid Future or concurrent future.
+        
+    The function checks the type of both 'source' and 'destination' to ensure they are valid futures 
+    (either asyncio.Future or concurrent.futures.Future). It retrieves the event loop for both futures 
+    (if they are asyncio futures) and proceeds to chain them by copying the result or exception from 
+    the source to the destination and handling cancellation propagation.
+    """"""
+    # Ensure both source and destination are valid futures
+    if not isfuture(source) and not isinstance(source, concurrent.futures.Future):
+        raise TypeError('A future is required for source argument')
+    if not isfuture(destination) and not isinstance(destination, concurrent.futures.Future):
+        raise TypeError('A future is required for destination argument')
+
+    # Get the event loop for the source and destination futures, if applicable
+    source_loop = _get_loop(source) if isfuture(source) else None
+    dest_loop = _get_loop(destination) if isfuture(destination) else None
+","The _chain_future function links two futures (source and destination) in such a way that when one completes, the other is also completed with the same result or exception. If the source future is cancelled, the destination future will also be cancelled. The function checks if both source and destination are valid futures (either asyncio.Future or concurrent.futures.Future). It retrieves the event loops for both futures if they are asyncio-based and prepares the futures to transfer the result or exception between them while ensuring cancellation propagation."
