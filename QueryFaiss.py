@@ -27,6 +27,6 @@ model = SentenceTransformer('all-MiniLM-L6-v2')
 #query = "def sum(a, b): return a + b" # FIX THIS. Get a query from the interface we are developing down the line
 def query_faiss(query):
     # Use the indices returned below to get the data from RockDB
-    indices, distances = search_similar_function(preprocess_text(query), k=3)
+    indices, distances = search_similar_function(preprocess_text(query), k=1)
     
     return indices, distances
